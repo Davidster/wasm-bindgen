@@ -46,6 +46,7 @@ tys! {
     RESULT
     UNIT
     CLAMPED
+    IMPORT_ENUM
 }
 
 #[inline(always)] // see the wasm-interpreter crate

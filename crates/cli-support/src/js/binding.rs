@@ -658,6 +658,23 @@ fn instruction(
             }
         }
 
+        Instruction::WasmToEnum { variant_values } => {
+            let index = js.pop();
+
+            // e.g. ["one","two","three"][someIndex]
+            let mut result = String::new();
+            result.push('[');
+            for variant in variant_values {
+                result.push_str(&format!("\"{variant}\","));
+            }
+            result.push(']');
+            result.push('[');
+            result.push_str(&index);
+            result.push(']');
+
+            js.push(result)
+        }
+
         Instruction::MemoryToString(mem) => {
             let len = js.pop();
             let ptr = js.pop();
@@ -1337,6 +1354,7 @@ fn adapter2ts(ty: &AdapterType, dst: &mut String) {
         AdapterType::NamedExternref(name) => dst.push_str(name),
         AdapterType::Struct(name) => dst.push_str(name),
         AdapterType::Enum(name) => dst.push_str(name),
+        AdapterType::JsEnum { name, .. } => dst.push_str(name),
         AdapterType::Function => dst.push_str("any"),
     }
 }
