@@ -77,6 +77,8 @@ fn main() -> anyhow::Result<()> {
         None => bail!("must have a file to test as first argument"),
     };
 
+    dbg!(&wasm_file_to_test);
+
     let file_name = wasm_file_to_test
         .file_name()
         .and_then(|s| s.to_str())
@@ -218,6 +220,7 @@ fn main() -> anyhow::Result<()> {
         b.split_linked_modules(true);
     }
 
+    dbg!(module);
     b.debug(debug)
         .input_module(module, wasm)
         .keep_debug(false)

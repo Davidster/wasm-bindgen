@@ -556,6 +556,10 @@ impl Transform<'_> {
         let scratch_i32 = locals.add(ValType::I32);
         let scratch_externref = locals.add(ValType::Externref);
 
+        if externref_stack == 5520 {
+            println!("got it 99");
+        }
+
         // Update our stack pointer if there's any borrowed externref objects.
         if externref_stack > 0 {
             body.global_get(self.stack_pointer)

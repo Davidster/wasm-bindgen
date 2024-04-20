@@ -210,6 +210,10 @@ fn xform_one(
     let mut wrapper = walrus::FunctionBuilder::new(&mut module.types, &new_params, results);
     let mut body = wrapper.func_body();
 
+    if results_size as i32 == 5520 {
+        println!("got it 98");
+    }
+
     // Allocate space in the shadow stack for the call.
     body.global_get(shadow_stack_pointer)
         .i32_const(results_size as i32)

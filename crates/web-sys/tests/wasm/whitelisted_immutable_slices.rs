@@ -15,7 +15,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{
     FileSystemReadWriteOptions, FileSystemSyncAccessHandle, FileSystemWritableFileStream,
 };
-use web_sys::{WebGl2RenderingContext, WebGlRenderingContext, WebSocket};
+use web_sys::{GpuTextureFormat, WebGl2RenderingContext, WebGlRenderingContext, WebSocket};
 
 // Ensure that our whitelisted WebGlRenderingContext methods compile with immutable slices.
 fn test_webgl_rendering_context_immutable_slices() {
@@ -58,6 +58,8 @@ fn test_webgl_rendering_context_immutable_slices() {
         Some(&[1]),
     );
     gl.compressed_tex_image_2d_with_u8_array(0, 0, 0, 0, 0, 0, &[1]);
+
+    let texture_format = GpuTextureFormat::R8unorm;
 }
 
 // Ensure that our whitelisted WebGl2RenderingContext methods compile with immutable slices.

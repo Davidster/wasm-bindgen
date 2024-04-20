@@ -72,6 +72,7 @@ impl Interpreter {
         // (the LLVM call stack, now the wasm stack). To handle that let's give
         // our selves a little bit of memory and set the stack pointer (global
         // 0) to the top.
+        ret.mem = vec![0; 0x2000];
         ret.mem = vec![0; 0x400];
         ret.sp = ret.mem.len() as i32;
 
@@ -217,6 +218,8 @@ impl Interpreter {
         let func = module.funcs.get(id);
         log::debug!("starting a call of {:?} {:?}", id, func.name);
         log::debug!("arguments {:?}", args);
+        println!("starting a call of {:?} {:?}", id, func.name);
+        println!("arguments {:?}", args);
         let local = match &func.kind {
             walrus::FunctionKind::Local(l) => l,
             _ => panic!("can only call locally defined functions"),
@@ -224,6 +227,8 @@ impl Interpreter {
 
         let entry = local.entry_block();
         let block = local.block(entry);
+
+        // println!("entry={entry:?}, block={block:?}");
 
         let mut frame = Frame {
             module,
@@ -238,6 +243,10 @@ impl Interpreter {
         }
 
         for (instr, _) in block.instrs.iter() {
+            // println!(
+            //     "frame.interp.scratch.len()={}, instr={instr:?}",
+            //     frame.interp.scratch.len()
+            // );
             frame.eval(instr);
             if frame.done {
                 break;
@@ -262,10 +271,21 @@ impl Frame<'_> {
 
         match instr {
             Instr::Const(c) => match c.value {
-                Value::I32(n) => stack.push(n),
+                Value::I32(n) => {
+                    if n == 5520 {
+                        println!("got it 6");
+                    }
+                    stack.push(n);
+                }
                 _ => panic!("non-i32 constant"),
             },
-            Instr::LocalGet(e) => stack.push(self.locals.get(&e.local).cloned().unwrap_or(0)),
+            Instr::LocalGet(e) => {
+                let val = self.locals.get(&e.local).cloned().unwrap_or(0);
+                if val == 5520 {
+                    println!("got it 5");
+                }
+                stack.push(val);
+            }
             Instr::LocalSet(e) => {
                 let val = stack.pop().unwrap();
                 self.locals.insert(e.local, val);
@@ -276,7 +296,12 @@ impl Frame<'_> {
             }
 
             // Blindly assume all globals are the stack pointer
-            Instr::GlobalGet(_) => stack.push(self.interp.sp),
+            Instr::GlobalGet(_) => {
+                if self.interp.sp == 5520 {
+                    println!("got it 7");
+                }
+                stack.push(self.interp.sp);
+            }
             Instr::GlobalSet(_) => {
                 let val = stack.pop().unwrap();
                 self.interp.sp = val;
@@ -287,11 +312,18 @@ impl Frame<'_> {
             Instr::Binop(e) => {
                 let rhs = stack.pop().unwrap();
                 let lhs = stack.pop().unwrap();
-                stack.push(match e.op {
+                let val = match e.op {
                     BinaryOp::I32Sub => lhs - rhs,
                     BinaryOp::I32Add => lhs + rhs,
                     op => panic!("invalid binary op {:?}", op),
-                });
+                };
+                if val < 0 {
+                    println!("lhs={lhs}, rhs={rhs}, val={val}");
+                }
+                if val == 5520 {
+                    println!("got it 2");
+                }
+                stack.push(val);
             }
 
             // Support small loads/stores to the stack. These show up in debug
@@ -299,14 +331,23 @@ impl Frame<'_> {
             // theory there doesn't need to be.
             Instr::Load(e) => {
                 let address = stack.pop().unwrap();
-                let address = address as u32 + e.arg.offset;
+                let address = address + e.arg.offset as i32;
+                assert!(address >= 0);
                 assert!(address % 4 == 0);
-                stack.push(self.interp.mem[address as usize / 4])
+                let val = self.interp.mem[address as usize / 4];
+                if val == 5520 {
+                    println!("got it 3");
+                }
+                stack.push(val)
             }
             Instr::Store(e) => {
                 let value = stack.pop().unwrap();
                 let address = stack.pop().unwrap();
-                let address = address as u32 + e.arg.offset;
+                if address < 0 || address > 1_000_000_000 || e.arg.offset > 1_000_000_000 {
+                    println!("address={address}, e.arg.offset={}", e.arg.offset);
+                }
+                let address = address + e.arg.offset as i32;
+                assert!(address >= 0);
                 assert!(address % 4 == 0);
                 self.interp.mem[address as usize / 4] = value;
             }
@@ -330,6 +371,9 @@ impl Frame<'_> {
                 if Some(e.func) == self.interp.describe_id {
                     let val = stack.pop().unwrap();
                     log::debug!("__wbindgen_describe({})", val);
+                    if val == 5520 {
+                        println!("got it 4");
+                    }
                     self.interp.descriptor.push(val as u32);
 
                 // If this function is calling the `__wbindgen_describe_closure`
