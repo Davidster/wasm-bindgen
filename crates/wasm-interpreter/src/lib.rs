@@ -19,7 +19,7 @@
 #![deny(missing_docs)]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use walrus::ir::Instr;
+use walrus::ir::{Instr, InstrSeqId};
 use walrus::{ElementId, FunctionId, LocalId, Module, TableId};
 
 /// A ready-to-go interpreter of a wasm module.
@@ -68,10 +68,9 @@ impl Interpreter {
     pub fn new(module: &Module) -> Result<Interpreter, anyhow::Error> {
         let mut ret = Interpreter::default();
 
-        // The descriptor functions shouldn't really use all that much memory
-        // (the LLVM call stack, now the wasm stack). To handle that let's give
-        // our selves a little bit of memory and set the stack pointer (global
-        // 0) to the top.
+        // Set up the memory and call stack (the LLVM call stack, now the wasm stack).
+        // We give ourselves some memory and set the stack pointer (global 0) to the top.
+        // ret.mem = vec![0; 0x2000];
         ret.mem = vec![0; 0x400];
         ret.sp = ret.mem.len() as i32;
 
@@ -227,6 +226,7 @@ impl Interpreter {
 
         let mut frame = Frame {
             module,
+            function_id: id,
             interp: self,
             locals: BTreeMap::new(),
             done: false,
@@ -238,7 +238,18 @@ impl Interpreter {
         }
 
         for (instr, _) in block.instrs.iter() {
-            frame.eval(instr);
+            if let Err(err) = frame.eval(instr) {
+                match err {
+                    FatalExecutionError::StackOverflow => {
+                        panic!(
+                            "Stack overflow occured at function {} of module {}, instruction={:?}",
+                            module.name.as_deref().unwrap_or("Unknown"),
+                            module.name.as_deref().unwrap_or("Unknown"),
+                            instr
+                        );
+                    }
+                }
+            }
             if frame.done {
                 break;
             }
@@ -249,63 +260,75 @@ impl Interpreter {
 
 struct Frame<'a> {
     module: &'a Module,
+    function_id: FunctionId,
     interp: &'a mut Interpreter,
     locals: BTreeMap<LocalId, i32>,
     done: bool,
 }
 
-impl Frame<'_> {
-    fn eval(&mut self, instr: &Instr) {
-        use walrus::ir::*;
+#[derive(Debug, Clone)]
+enum FatalExecutionError {
+    StackOverflow,
+}
 
-        let stack = &mut self.interp.scratch;
+impl Frame<'_> {
+    fn eval(&mut self, instr: &Instr) -> Result<(), FatalExecutionError> {
+        use walrus::ir::*;
 
         match instr {
             Instr::Const(c) => match c.value {
-                Value::I32(n) => stack.push(n),
+                Value::I32(n) => {
+                    self.push_stack(n)?;
+                }
                 _ => panic!("non-i32 constant"),
             },
-            Instr::LocalGet(e) => stack.push(self.locals.get(&e.local).cloned().unwrap_or(0)),
+            Instr::LocalGet(e) => {
+                self.push_stack(self.locals.get(&e.local).cloned().unwrap_or(0))?;
+            }
             Instr::LocalSet(e) => {
-                let val = stack.pop().unwrap();
+                let val = self.pop_stack();
                 self.locals.insert(e.local, val);
             }
             Instr::LocalTee(e) => {
-                let val = *stack.last().unwrap();
+                let val = self.peek_stack();
                 self.locals.insert(e.local, val);
             }
 
             // Blindly assume all globals are the stack pointer
-            Instr::GlobalGet(_) => stack.push(self.interp.sp),
+            Instr::GlobalGet(_) => {
+                self.push_stack(self.interp.sp)?;
+            }
             Instr::GlobalSet(_) => {
-                let val = stack.pop().unwrap();
+                let val = self.pop_stack();
                 self.interp.sp = val;
             }
 
             // Support simple arithmetic, mainly for the stack pointer
             // manipulation
             Instr::Binop(e) => {
-                let rhs = stack.pop().unwrap();
-                let lhs = stack.pop().unwrap();
-                stack.push(match e.op {
+                let rhs = self.pop_stack();
+                let lhs = self.pop_stack();
+                self.push_stack(match e.op {
                     BinaryOp::I32Sub => lhs - rhs,
                     BinaryOp::I32Add => lhs + rhs,
                     op => panic!("invalid binary op {:?}", op),
-                });
+                })?;
             }
 
             // Support small loads/stores to the stack. These show up in debug
             // mode where there's some traffic on the linear stack even when in
             // theory there doesn't need to be.
             Instr::Load(e) => {
-                let address = stack.pop().unwrap();
+                let address = self.pop_stack();
+                assert!(address > 0);
                 let address = address as u32 + e.arg.offset;
                 assert!(address % 4 == 0);
-                stack.push(self.interp.mem[address as usize / 4])
+                self.push_stack(self.interp.mem[address as usize / 4])?;
             }
             Instr::Store(e) => {
-                let value = stack.pop().unwrap();
-                let address = stack.pop().unwrap();
+                let value = self.pop_stack();
+                let address = self.pop_stack();
+                assert!(address > 0);
                 let address = address as u32 + e.arg.offset;
                 assert!(address % 4 == 0);
                 self.interp.mem[address as usize / 4] = value;
@@ -318,7 +341,7 @@ impl Frame<'_> {
 
             Instr::Drop(_) => {
                 log::debug!("drop");
-                stack.pop().unwrap();
+                self.pop_stack();
             }
 
             Instr::Call(e) => {
@@ -328,7 +351,7 @@ impl Frame<'_> {
                 // descriptor to return. We "call" the imported function
                 // here by directly inlining it.
                 if Some(e.func) == self.interp.describe_id {
-                    let val = stack.pop().unwrap();
+                    let val = self.pop_stack();
                     log::debug!("__wbindgen_describe({})", val);
                     self.interp.descriptor.push(val as u32);
 
@@ -338,18 +361,18 @@ impl Frame<'_> {
                 // previous arguments because they shouldn't have any side
                 // effects we're interested in.
                 } else if Some(e.func) == self.interp.describe_closure_id {
-                    let val = stack.pop().unwrap();
-                    stack.pop();
-                    stack.pop();
+                    let val = self.pop_stack();
+                    self.pop_stack();
+                    self.pop_stack();
                     log::debug!("__wbindgen_describe_closure({})", val);
                     self.interp.descriptor_table_idx = Some(val as u32);
-                    stack.push(0)
+                    self.push_stack(0)?;
 
                 // ... otherwise this is a normal call so we recurse.
                 } else {
                     let ty = self.module.types.get(self.module.funcs.get(e.func).ty());
                     let args = (0..ty.params().len())
-                        .map(|_| stack.pop().unwrap())
+                        .map(|_| self.pop_stack())
                         .collect::<Vec<_>>();
                     self.interp.call(e.func, self.module, &args);
                 }
@@ -365,6 +388,25 @@ impl Frame<'_> {
             // instructions in debug mode, and we'll have to react to those
             // sorts of changes as they arise.
             s => panic!("unknown instruction {:?}", s),
+        };
+
+        Ok(())
+    }
+
+    fn push_stack(&mut self, val: i32) -> Result<(), FatalExecutionError> {
+        if self.interp.scratch.len() >= self.interp.mem.len() / 4 {
+            return Err(FatalExecutionError::StackOverflow);
         }
+
+        self.interp.scratch.push(val);
+        Ok(())
+    }
+
+    fn pop_stack(&mut self) -> i32 {
+        self.interp.scratch.pop().unwrap()
+    }
+
+    fn peek_stack(&mut self) -> i32 {
+        *self.interp.scratch.last().unwrap()
     }
 }
